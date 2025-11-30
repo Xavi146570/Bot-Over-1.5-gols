@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from fastapi import FastAPI
 import uvicorn
 from src.analyzer import Analyzer
@@ -19,22 +20,32 @@ app = FastAPI()
 analyzer = Analyzer()
 
 # ------------------------------------------------------------
-# Scheduler diário (1x por dia)
+# Scheduler diário (executa sempre às 09:00)
 # ------------------------------------------------------------
 async def daily_scheduler():
     await asyncio.sleep(10)
-    logger.info("⏳ Scheduler diário iniciado (1x por dia).")
+    logger.info("⏳ Scheduler diário iniciado (executa sempre às 09:00).")
 
     while True:
+        now = datetime.now()
+        target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+
+        # Se já passou das 09:00 de hoje, agenda para amanhã
+        if now >= target:
+            target = target + timedelta(days=1)
+
+        wait_seconds = (target - now).total_seconds()
+        logger.info(f"⏰ Aguardando até às 09:00 (faltam {wait_seconds/3600:.2f} horas).")
+
+        # Espera até o horário definido
+        await asyncio.sleep(wait_seconds)
+
         try:
-            logger.info("🚀 Executando análise diária...")
+            logger.info("🚀 Executando análise diária (09:00)...")
             analyzer.run_daily_analysis()
             logger.info("✅ Análise diária concluída.")
         except Exception as e:
             logger.error(f"Erro no scheduler diário: {e}")
-
-        logger.info("⏳ Próxima execução daqui a 24 horas.")
-        await asyncio.sleep(24 * 3600)
 
 # ------------------------------------------------------------
 # Startup da aplicação
