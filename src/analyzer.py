@@ -8,6 +8,29 @@ logger.setLevel(logging.INFO)
 
 
 class Analyzer:
+    TOP_20_LEAGUES = [
+        39,   # Premier League (Inglaterra)
+        140,  # La Liga (Espanha)
+        61,   # Ligue 1 (França)
+        78,   # Bundesliga (Alemanha)
+        135,  # Serie A (Itália)
+        94,   # Primeira Liga (Portugal)
+        88,   # Eredivisie (Holanda)
+        203,  # Brasileirão Série A (Brasil)
+        179,  # Superliga (Dinamarca)
+        144,  # Ekstraklasa (Polónia)
+        141,  # Segunda División (Espanha)
+        40,   # Championship (Inglaterra)
+        262,  # Pro League (Bélgica)
+        301,  # Swiss Super League (Suíça)
+        235,  # Scottish Premiership (Escócia)
+        253,  # Allsvenskan (Suécia)
+        556,  # MLS (EUA)
+        566,  # Argentina Liga Profesional
+        569,  # Chile Primera División
+        795   # Saudi Pro League (Arábia Saudita)
+    ]
+
     def __init__(self):
         self.api_url = "https://v3.football.api-sports.io"
         self.api_key = os.getenv("API_SPORTS_KEY")
@@ -17,6 +40,19 @@ class Analyzer:
         }
         self.telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "-1003109764236")
+
+        # Ligas personalizadas via variável de ambiente
+        leagues_env = os.getenv("LEAGUE_IDS", "")
+        if leagues_env:
+            try:
+                parsed = [int(x.strip()) for x in leagues_env.split(",") if x.strip().isdigit()]
+                self.leagues = sorted(list(set(parsed)))
+                logger.info(f"📜 Ligas definidas por variável de ambiente: {self.leagues}")
+            except Exception as e:
+                logger.error(f"Erro ao processar LEAGUE_IDS: {e}")
+                self.leagues = self.TOP_20_LEAGUES
+        else:
+            self.leagues = self.TOP_20_LEAGUES
 
         if not self.api_key:
             logger.error("❌ API_SPORTS_KEY não configurada!")
@@ -50,11 +86,7 @@ class Analyzer:
         return None
 
     def _get_team_statistics(self, team_id, league_id, season):
-        params = {
-            "team": team_id,
-            "league": league_id,
-            "season": season
-        }
+        params = {"team": team_id, "league": league_id, "season": season}
         stats = self._get_api_data("teams/statistics", params)
         if stats:
             return stats
@@ -98,18 +130,7 @@ class Analyzer:
     # ------------------------------------------------------------
     def run_daily_analysis(self, leagues=None):
         if leagues is None:
-            leagues = [
-                39,   # Premier League (Inglaterra)
-                140,  # La Liga (Espanha)
-                61,   # Ligue 1 (França)
-                78,   # Bundesliga (Alemanha)
-                135,  # Serie A (Itália)
-                94,   # Primeira Liga (Portugal)
-                88,   # Eredivisie (Holanda)
-                128,  # Super Lig (Turquia)
-                203,  # Brasileirão Série A (Brasil)
-                222   # MLS (EUA)
-            ]
+            leagues = self.leagues
 
         today_str = datetime.now().strftime("%Y-%m-%d")
         season = datetime.now().year
