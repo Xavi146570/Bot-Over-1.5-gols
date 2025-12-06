@@ -34,29 +34,6 @@ class Analyzer:
         else:
             self.leagues = self.TOP_20_LEAGUES
 
-    def _get_current_season(self):
-        """
-        Calcula a season. 
-        Prioridade: 
-        1. Variável de Ambiente (FIXED_SEASON) no ficheiro .env
-        2. Cálculo automático baseado na data
-        """
-        # 1. Tenta ler do .env (ex: FIXED_SEASON=2024)
-        env_season = os.getenv("FIXED_SEASON")
-        
-        if env_season:
-            try:
-                # Log apenas na primeira execução para não poluir
-                return int(env_season)
-            except ValueError:
-                logger.error("❌ FIXED_SEASON no .env não é um número válido.")
-
-        # 2. Fallback Automático
-        now = datetime.now()
-        if now.month < 8:
-            return now.year - 1
-        return now.year
-
     def _get_api_data(self, endpoint, params):
         url = f"{self.api_url}/{endpoint}"
         try:
@@ -64,9 +41,8 @@ class Analyzer:
             response.raise_for_status()
             data = response.json()
             
-            # Log de erros da API (como o "Season required")
             if data.get("errors"):
-                logger.warning(f"⚠️ API retornou erro/aviso: {data['errors']}")
+                logger.warning(f"⚠️ API retornou erro/aviso em '{endpoint}': {data['errors']}")
                 return None
                 
             return data.get("response", [])
@@ -75,8 +51,7 @@ class Analyzer:
         return None
 
     def _get_last_fixture(self, team_id):
-        # Busca o último jogo TERMINADO (status FT, AET, PEN) 
-        # Importante: Evita pegar o jogo que está a decorrer agora (Live)
+        # Busca o último jogo TERMINADO
         params = {
             "team": team_id, 
             "last": 1,
@@ -86,17 +61,18 @@ class Analyzer:
         return fixtures[0] if fixtures else None
 
     def _get_team_statistics(self, team_id, league_id, season):
+        # Aqui a season é obrigatória, mas vamos passá-la dinamicamente
         params = {"team": team_id, "league": league_id, "season": season}
         stats = self._get_api_data("teams/statistics", params)
         return stats
 
     def _calculate_real_stats(self, team_stats):
-        """Calcula estatísticas REAIS baseadas nos dados da API"""
         if not team_stats:
             return 0.0, "N/A"
 
-        played = team_stats.get("fixtures", {}).get("played", {}).get("total", 0)
-        draws = team_stats.get("fixtures", {}).get("draws", {}).get("total", 0)
+        fixtures = team_stats.get("fixtures", {})
+        played = fixtures.get("played", {}).get("total", 0)
+        draws = fixtures.get("draws", {}).get("total", 0)
         
         clean_sheets = team_stats.get("clean_sheet", {}).get("total", 0)
         failed_to_score = team_stats.get("failed_to_score", {}).get("total", 0)
@@ -111,7 +87,7 @@ class Analyzer:
 
     def _send_telegram_message(self, message):
         if not self.telegram_token or not self.telegram_chat_id:
-            logger.warning("⚠️ Telegram não configurado. Mensagem não enviada.")
+            logger.warning("⚠️ Telegram não configurado.")
             return
 
         url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
@@ -123,20 +99,17 @@ class Analyzer:
 
     def run_daily_analysis(self):
         today_str = datetime.now().strftime("%Y-%m-%d")
-        
-        # Obtém a season (fixa pelo .env ou automática)
-        current_season = self._get_current_season()
-        
-        logger.info(f"📅 Analisando jogos para: {today_str} (Season usada: {current_season})")
+        logger.info(f"📅 Analisando jogos para data: {today_str}")
 
         matches_found = 0
         
         for league_id in self.leagues:
-            # CORREÇÃO: Enviamos a 'season' para satisfazer a API
+            # 1. BUSCA DINÂMICA
+            # Não enviamos 'season' aqui. A API vai procurar jogos nesta data e liga.
+            # Se houver jogo, a API devolve os dados, INCLUINDO a season correta.
             params = {
                 "date": today_str, 
                 "league": league_id, 
-                "season": current_season,
                 "timezone": "Europe/Lisbon"
             }
             fixtures_today = self._get_api_data("fixtures", params)
@@ -145,11 +118,19 @@ class Analyzer:
                 continue
 
             matches_found += len(fixtures_today)
-            logger.info(f"🔎 Liga {league_id}: {len(fixtures_today)} jogos")
+            logger.info(f"🔎 Liga {league_id}: {len(fixtures_today)} jogos encontrados.")
 
             for fixture in fixtures_today:
-                # Verifica apenas jogos que NÃO começaram (NS) ou data a definir (TBD)
+                # Filtrar jogos não iniciados
                 if fixture['fixture']['status']['short'] not in ['NS', 'TBD']:
+                    continue
+                
+                # 🧠 CAPTURA DA SEASON DINÂMICA
+                # A API diz-nos aqui qual é a season oficial deste jogo!
+                try:
+                    match_season = fixture['league']['season']
+                except (KeyError, TypeError):
+                    logger.warning(f"⚠️ Não foi possível detectar a season do jogo {fixture['fixture']['id']}. Pulando.")
                     continue
 
                 home = fixture["teams"]["home"]
@@ -162,9 +143,8 @@ class Analyzer:
                     team_id = team_obj['id']
                     team_name = team_obj['name']
 
-                    # Busca último jogo CONCLUÍDO
+                    # 2. Busca último jogo concluído
                     last_match = self._get_last_fixture(team_id)
-
                     if not last_match:
                         continue
 
@@ -172,8 +152,9 @@ class Analyzer:
                     goals = last_match.get('goals', {})
                     if goals.get('home') == 0 and goals.get('away') == 0:
                         
-                        # Busca stats
-                        stats = self._get_team_statistics(team_id, league_id, current_season)
+                        # 3. Busca stats usando a season que descobrimos no passo 1
+                        # Isto evita o erro "Season required" e usa sempre o ano correto
+                        stats = self._get_team_statistics(team_id, league_id, match_season)
                         draw_rate, defensive_trend = self._calculate_real_stats(stats)
                         
                         last_opponent = last_match['teams']['away']['name'] if last_match['teams']['home']['id'] == team_id else last_match['teams']['home']['name']
@@ -186,13 +167,13 @@ class Analyzer:
                             f"🕒 {datetime.fromtimestamp(fixture['fixture']['timestamp']).strftime('%H:%M')}\n\n"
                             f"⚠️ <b>{team_name} ({side})</b> vem de 0x0!\n"
                             f"🆚 vs {last_opponent} ({last_date})\n\n"
-                            f"📊 <b>Estatísticas {current_season}:</b>\n"
+                            f"📊 <b>Estatísticas (Season {match_season}):</b>\n"
                             f"• Taxa Empates: {draw_rate:.1f}%\n"
                             f"• Tendência 'Under': {defensive_trend:.1f}%\n"
                         )
                         
                         self._send_telegram_message(msg)
-                        logger.info(f"✅ Alerta enviado: {team_name}")
+                        logger.info(f"✅ Alerta enviado: {team_name} (Season {match_season})")
 
         logger.info(f"🏁 Análise concluída. Total jogos vistos na API: {matches_found}")
 
